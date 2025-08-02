@@ -1,0 +1,54 @@
+import { Connection } from '../connection';
+import { Font, Capability } from '../capabilities';
+import { Align, Style, Cut, Drawer } from '../actions';
+import Image from '../graphics/Image';
+import Manager from '../graphics/Manager';
+export type StyleConf = {
+    width?: number;
+    height?: number;
+    bold?: boolean;
+    underline?: boolean;
+    italic?: boolean;
+    align?: Align;
+};
+export declare abstract class Profile {
+    private _columns;
+    private _codepage;
+    private _font;
+    private _connection;
+    protected capabilities: Capability;
+    imageManager?: Manager;
+    constructor(capabilities: Capability);
+    abstract feed(lines: number): Promise<void>;
+    abstract cutter(mode: Cut): Promise<void>;
+    abstract buzzer(): Promise<void>;
+    abstract drawer(number: Drawer, on_time: number, off_time: number): Promise<void>;
+    abstract setAlignment(align: Align): Promise<void>;
+    abstract qrcode(data: string, size: number): Promise<void>;
+    protected abstract setMode(mode: number, enable: boolean): Promise<void>;
+    protected abstract setStyle(style: Style, enable: boolean): Promise<void>;
+    protected abstract setCharSize(charSize: {
+        width: number;
+        height: number;
+    }): Promise<void>;
+    protected setStyles(styles: number, enable: boolean): Promise<void>;
+    write(text: string, styles: number): Promise<void>;
+    withStyle(styleConf: StyleConf, cb: Function): Promise<void>;
+    writeln(text: string, styles: number, align: Align): Promise<void>;
+    protected get bitmapCmd(): string;
+    draw(image: Image): Promise<void>;
+    protected drawQrcode(data: string, size: number): Promise<void>;
+    get connection(): Connection;
+    set connection(value: Connection);
+    get name(): string;
+    get columns(): number;
+    setColumns(value: number): Promise<void>;
+    setFont(value: Font): Promise<void>;
+    get font(): Font;
+    get fonts(): Font[];
+    setCodepage(value: string): Promise<void>;
+    protected applyCodePage(): Promise<void>;
+    protected fontChanged(_: Font, __: Font): Promise<void>;
+    initialize(): Promise<void>;
+    finalize(): Promise<void>;
+}
