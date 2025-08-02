@@ -102,7 +102,7 @@ function createTVSRP3160Bill(bill) {
   
   // Restaurant Details
   content.push('123 Main Street, City - 12345\n');
-  content.push('Ph: +91-9876543210\n');
+  content.push('Ph: +91-9691954035\n');
   content.push('GSTIN: 12ABCDE3456F7GH\n');
   content.push('FSSAI: 12345678901234\n');
   content.push('\n');
@@ -598,7 +598,7 @@ router.post('/test', auth, async (req, res) => {
     const testBill = {
       billNumber: `TVS-TEST-${Date.now()}`,
       customerName: 'Test Customer',
-      customerPhone: '+91-9876543210',
+      customerPhone: '+91-9691954035',
       tableNumber: 'T5',
       items: [
         { name: 'Masala Dosa', quantity: 2, price: 80, total: 160 },

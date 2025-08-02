@@ -165,7 +165,353 @@ router.get('/:id', async (req, res) => {
     handleError(res, error, 'Failed to retrieve employee');
   }
 });
-
+router.get('/stats/attendance', async (req, res) => {
+          try {
+            const { month, year, department, role } = req.query;
+            
+            const currentMonth = month || (new Date().getMonth() + 1);
+            const currentYear = year || new Date().getFullYear();
+        
+            let query = { isActive: true };
+            if (department) query.department = department;
+            if (role) query.role = role;
+        
+            const employees = await Employee.find(query);
+            
+            const analytics = {
+              period: `${currentMonth}/${currentYear}`,
+              totalEmployees: employees.length,
+              overallStats: {
+                totalPresent: 0,
+                totalHours: 0,
+                totalOvertimeHours: 0,
+                averageAttendance: 0,
+                punctualityScore: 0
+              },
+              departmentStats: {},
+              roleStats: {},
+              performanceMetrics: {
+                topPerformers: [],
+                concernedEmployees: []
+              }
+            };
+        
+            if (employees.length === 0) {
+              return sendResponse(res, 200, true, 'No employees found for the given criteria', analytics);
+            }
+        
+            let totalPresentDays = 0;
+            let totalPossibleDays = 0;
+            let totalLateCount = 0;
+            let totalEarlyLeaveCount = 0;
+        
+            const employeeMetrics = [];
+        
+            employees.forEach(emp => {
+              try {
+                const monthlyData = emp.getMonthlyAttendance(currentMonth, currentYear);
+                
+                totalPresentDays += monthlyData.presentDays || 0;
+                totalPossibleDays += (monthlyData.presentDays || 0) + (monthlyData.absentDays || 0);
+                totalLateCount += monthlyData.lateCount || 0;
+                totalEarlyLeaveCount += monthlyData.earlyLeaveCount || 0;
+                
+                analytics.overallStats.totalHours += monthlyData.totalHours || 0;
+                analytics.overallStats.totalOvertimeHours += monthlyData.overtimeHours || 0;
+        
+                // Department stats
+                if (!analytics.departmentStats[emp.department]) {
+                  analytics.departmentStats[emp.department] = {
+                    employees: 0,
+                    totalPresent: 0,
+                    totalHours: 0,
+                    averageAttendance: 0
+                  };
+                }
+                
+                const deptStats = analytics.departmentStats[emp.department];
+                deptStats.employees++;
+                deptStats.totalPresent += monthlyData.presentDays || 0;
+                deptStats.totalHours += monthlyData.totalHours || 0;
+        
+                // Role stats
+                if (!analytics.roleStats[emp.role]) {
+                  analytics.roleStats[emp.role] = {
+                    employees: 0,
+                    totalPresent: 0,
+                    averageAttendance: 0
+                  };
+                }
+                
+                const roleStats = analytics.roleStats[emp.role];
+                roleStats.employees++;
+                roleStats.totalPresent += monthlyData.presentDays || 0;
+        
+                // Employee metrics for performance analysis
+                const punctualityScore = (monthlyData.presentDays || 0) > 0 ? 
+                  Math.round(((monthlyData.presentDays - (monthlyData.lateCount || 0) - (monthlyData.earlyLeaveCount || 0)) / monthlyData.presentDays) * 100) : 0;
+        
+                employeeMetrics.push({
+                  id: emp._id.toString(), // Convert ObjectId to string
+                  name: emp.name,
+                  employeeId: emp.employeeId,
+                  department: emp.department,
+                  role: emp.role,
+                  attendancePercentage: monthlyData.attendancePercentage || 0,
+                  punctualityScore: punctualityScore,
+                  totalHours: monthlyData.totalHours || 0,
+                  overtimeHours: monthlyData.overtimeHours || 0
+                });
+              } catch (empError) {
+                console.error(`Error processing employee ${emp._id}:`, empError);
+                // Continue with next employee
+              }
+            });
+        
+            // Calculate overall averages
+            analytics.overallStats.averageAttendance = totalPossibleDays > 0 ? 
+              Math.round((totalPresentDays / totalPossibleDays) * 100) : 0;
+            
+            analytics.overallStats.punctualityScore = totalPresentDays > 0 ?
+              Math.round(((totalPresentDays - totalLateCount - totalEarlyLeaveCount) / totalPresentDays) * 100) : 0;
+        
+            // Calculate department averages
+            Object.keys(analytics.departmentStats).forEach(dept => {
+              const stats = analytics.departmentStats[dept];
+              const daysInMonth = new Date(currentYear, currentMonth, 0).getDate();
+              const workingDaysInMonth = Math.max(daysInMonth - 8, 22); // Assuming ~8 weekend days
+              stats.averageAttendance = stats.employees > 0 ? 
+                Math.round((stats.totalPresent / (stats.employees * workingDaysInMonth)) * 100) : 0;
+            });
+        
+            // Calculate role averages
+            Object.keys(analytics.roleStats).forEach(role => {
+              const stats = analytics.roleStats[role];
+              const daysInMonth = new Date(currentYear, currentMonth, 0).getDate();
+              const workingDaysInMonth = Math.max(daysInMonth - 8, 22);
+              stats.averageAttendance = stats.employees > 0 ?
+                Math.round((stats.totalPresent / (stats.employees * workingDaysInMonth)) * 100) : 0;
+            });
+        
+            // Performance metrics
+            const sortedByAttendance = [...employeeMetrics].sort((a, b) => b.attendancePercentage - a.attendancePercentage);
+        
+            analytics.performanceMetrics.topPerformers = sortedByAttendance.slice(0, 5).map(emp => ({
+              ...emp,
+              performanceScore: Math.round((emp.attendancePercentage * 0.7 + emp.punctualityScore * 0.3) * 100) / 100
+            }));
+        
+            analytics.performanceMetrics.concernedEmployees = sortedByAttendance
+              .filter(emp => emp.attendancePercentage < 80 || emp.punctualityScore < 70)
+              .slice(0, 10);
+        
+            sendResponse(res, 200, true, 'Attendance statistics retrieved successfully', analytics);
+          } catch (error) {
+            handleError(res, error, 'Failed to retrieve attendance statistics');
+          }
+        });
+        
+        
+        // Comprehensive report
+        router.get('/reports/comprehensive', async (req, res) => {
+          try {
+            const { startDate, endDate, department, role, reportType = 'summary' } = req.query;
+            
+            if (!startDate || !endDate) {
+              return sendResponse(res, 400, false, 'Start date and end date are required');
+            }
+            
+            const start = new Date(startDate);
+            const end = new Date(endDate);
+            
+            if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+              return sendResponse(res, 400, false, 'Invalid date format. Use YYYY-MM-DD');
+            }
+            
+            if (start >= end) {
+              return sendResponse(res, 400, false, 'End date must be after start date');
+            }
+            
+            let query = { isActive: true };
+            if (department && department !== 'all') query.department = department;
+            if (role && role !== 'all') query.role = role;
+            
+            const employees = await Employee.find(query);
+            
+            const report = {
+              period: `${startDate} to ${endDate}`,
+              generatedAt: new Date().toISOString(),
+              filters: { department: department || 'all', role: role || 'all' },
+              summary: {
+                totalEmployees: employees.length,
+                totalWorkingDays: Math.ceil((end - start) / (1000 * 60 * 60 * 24)),
+                totalPresent: 0,
+                totalAbsent: 0,
+                totalHours: 0,
+                totalOvertimeHours: 0,
+                totalSalaryPaid: 0
+              },
+              departmentBreakdown: {},
+              roleBreakdown: {},
+              topPerformers: [],
+              attendanceIssues: [],
+              salaryBreakdown: {
+                totalBaseSalary: 0,
+                totalOvertimePay: 0,
+                totalDeductions: 0,
+                totalNetPay: 0
+              }
+            };
+            
+            if (employees.length === 0) {
+              return sendResponse(res, 200, true, 'No employees found for the given criteria', report);
+            }
+            
+            const employeeDetails = [];
+            
+            employees.forEach(emp => {
+              try {
+                // Filter attendance within date range
+                const attendanceInRange = emp.attendance.filter(att => {
+                  const attDate = new Date(att.date);
+                  return attDate >= start && attDate <= end;
+                });
+                
+                const presentDays = attendanceInRange.filter(att => att.isPresent).length;
+                const absentDays = attendanceInRange.length - presentDays;
+                const totalHours = attendanceInRange.reduce((sum, att) => sum + (att.hoursWorked || 0), 0);
+                const overtimeHours = attendanceInRange.reduce((sum, att) => sum + (att.overtimeHours || 0), 0);
+                const lateCount = attendanceInRange.filter(att => att.status === 'late').length;
+                const earlyLeaveCount = attendanceInRange.filter(att => att.status === 'early-leave').length;
+                
+                // Calculate attendance percentage
+                const workingDays = Math.max(presentDays + absentDays, 1);
+                const attendancePercentage = Math.round((presentDays / workingDays) * 100);
+                const punctualityScore = presentDays > 0 ? 
+                  Math.round(((presentDays - lateCount - earlyLeaveCount) / presentDays) * 100) : 0;
+                
+                // Simplified salary calculation for report period
+                const dailyBaseSalary = (emp.salary?.base || 0) / 30;
+                const basePay = dailyBaseSalary * presentDays;
+                const overtimeRate = emp.salary?.overtime || emp.hourlyRate * 1.5 || 50;
+                const overtimePay = overtimeRate * overtimeHours;
+                const grossPay = basePay + overtimePay + (emp.salary?.bonus || 0);
+                const netPay = grossPay - (emp.salary?.deductions || 0);
+                
+                // Update summary
+                report.summary.totalPresent += presentDays;
+                report.summary.totalAbsent += absentDays;
+                report.summary.totalHours += totalHours;
+                report.summary.totalOvertimeHours += overtimeHours;
+                report.summary.totalSalaryPaid += netPay;
+                
+                // Update salary breakdown
+                report.salaryBreakdown.totalBaseSalary += basePay;
+                report.salaryBreakdown.totalOvertimePay += overtimePay;
+                report.salaryBreakdown.totalDeductions += (emp.salary?.deductions || 0);
+                report.salaryBreakdown.totalNetPay += netPay;
+                
+                // Department breakdown
+                if (!report.departmentBreakdown[emp.department]) {
+                  report.departmentBreakdown[emp.department] = {
+                    employees: 0,
+                    totalPresent: 0,
+                    totalHours: 0,
+                    averageAttendance: 0,
+                    totalSalary: 0
+                  };
+                }
+                const deptStats = report.departmentBreakdown[emp.department];
+                deptStats.employees++;
+                deptStats.totalPresent += presentDays;
+                deptStats.totalHours += totalHours;
+                deptStats.totalSalary += netPay;
+                
+                // Employee details for further analysis
+                employeeDetails.push({
+                  id: emp._id.toString(), // Convert ObjectId to string
+                  name: emp.name,
+                  employeeId: emp.employeeId,
+                  department: emp.department,
+                  role: emp.role,
+                  attendancePercentage,
+                  punctualityScore,
+                  presentDays,
+                  absentDays,
+                  totalHours: Math.round(totalHours * 100) / 100,
+                  overtimeHours: Math.round(overtimeHours * 100) / 100,
+                  lateCount,
+                  earlyLeaveCount,
+                  netPay: Math.round(netPay),
+                  performanceScore: Math.round((attendancePercentage * 0.4 + punctualityScore * 0.3 + Math.min(totalHours/160, 1) * 100 * 0.3) * 100) / 100
+                });
+              } catch (empError) {
+                console.error(`Error processing employee ${emp._id} in comprehensive report:`, empError);
+                // Continue with next employee
+              }
+            });
+            
+            // Calculate department averages
+            Object.keys(report.departmentBreakdown).forEach(dept => {
+              const stats = report.departmentBreakdown[dept];
+              const deptEmployees = employeeDetails.filter(emp => emp.department === dept);
+              stats.averageAttendance = deptEmployees.length > 0 ? 
+                Math.round(deptEmployees.reduce((sum, emp) => sum + emp.attendancePercentage, 0) / deptEmployees.length) : 0;
+            });
+            
+            // Top performers (top 10 by performance score)
+            report.topPerformers = employeeDetails
+              .sort((a, b) => b.performanceScore - a.performanceScore)
+              .slice(0, 10)
+              .map(emp => ({
+                name: emp.name,
+                employeeId: emp.employeeId,
+                department: emp.department,
+                role: emp.role,
+                performanceScore: emp.performanceScore,
+                attendancePercentage: emp.attendancePercentage,
+                punctualityScore: emp.punctualityScore
+              }));
+            
+            // Attendance issues
+            report.attendanceIssues = employeeDetails
+              .filter(emp => emp.attendancePercentage < 80 || emp.lateCount > 5)
+              .map(emp => ({
+                name: emp.name,
+                employeeId: emp.employeeId,
+                department: emp.department,
+                role: emp.role,
+                attendancePercentage: emp.attendancePercentage,
+                lateCount: emp.lateCount,
+                earlyLeaveCount: emp.earlyLeaveCount,
+                issues: [
+                  ...(emp.attendancePercentage < 80 ? [`Low attendance: ${emp.attendancePercentage}%`] : []),
+                  ...(emp.lateCount > 5 ? [`Frequent late arrivals: ${emp.lateCount} times`] : []),
+                  ...(emp.earlyLeaveCount > 3 ? [`Early leaves: ${emp.earlyLeaveCount} times`] : [])
+                ]
+              }));
+            
+            // Round summary numbers
+            Object.keys(report.summary).forEach(key => {
+              if (typeof report.summary[key] === 'number') {
+                report.summary[key] = Math.round(report.summary[key]);
+              }
+            });
+            
+            Object.keys(report.salaryBreakdown).forEach(key => {
+              report.salaryBreakdown[key] = Math.round(report.salaryBreakdown[key]);
+            });
+            
+            // Include detailed employee data if requested
+            if (reportType === 'detailed') {
+              report.employeeDetails = employeeDetails;
+            }
+            
+            sendResponse(res, 200, true, 'Comprehensive report generated successfully', report);
+          } catch (error) {
+            handleError(res, error, 'Failed to generate comprehensive report');
+          }
+        });
 // Create new employee
 router.post('/', upload.single('profilePicture'), async (req, res) => {
   try {
@@ -588,8 +934,8 @@ router.get('/attendance/today', async (req, res) => {
         att => new Date(att.date).toDateString() === todayString
       );
 
-      // Check if on break
-      const onBreak = todayAttendance?.breaks?.some(b => !b.endTime) || false;
+      // FIX: Check if on break more reliably
+      const onBreak = todayAttendance?.breaks?.some(b => b.startTime && !b.endTime) || false;
 
       return {
         id: emp._id,
@@ -739,8 +1085,8 @@ router.get('/:id/salary/:month/:year', async (req, res) => {
     };
 
     const deductions = {
-      pf: Math.round((salaryData.baseSalary || salaryData.basePay) * 0.12), // 12% PF
-      esi: Math.round((salaryData.baseSalary || salaryData.basePay) * 0.0175),
+      pf: Math.round((salaryData.baseSalary || salaryData.basePay || 0) * 0.12), // 12% PF
+      esi: Math.round((salaryData.baseSalary || salaryData.basePay || 0) * 0.0175),
       tax: 0,
       advance: employee.salary.deductions || 0
     };
@@ -748,7 +1094,8 @@ router.get('/:id/salary/:month/:year', async (req, res) => {
     const totalAllowances = Object.values(allowances).reduce((sum, val) => sum + val, 0);
     const totalDeductions = Object.values(deductions).reduce((sum, val) => sum + val, 0);
 
-    const payslip = {
+    // Create consistent response structure
+    const responseData = {
       employee: {
         name: employee.name,
         employeeId: employee.employeeId,
@@ -760,22 +1107,23 @@ router.get('/:id/salary/:month/:year', async (req, res) => {
       period: {
         month: parseInt(month),
         year: parseInt(year),
+        
         monthName: new Date(year, month - 1).toLocaleString('default', { month: 'long' }),
         workingDays: monthlyAttendance.presentDays + monthlyAttendance.absentDays,
         presentDays: monthlyAttendance.presentDays
       },
       earnings: {
-        basicSalary: salaryData.baseSalary || salaryData.basePay || 0,
+        baseSalary: salaryData.baseSalary || salaryData.basePay || 0,
         overtimePay: salaryData.overtimePay || 0,
         allowances,
         totalAllowances,
-        grossEarnings: (salaryData.grossSalary || 0) + totalAllowances
+        grossSalary: (salaryData.grossSalary || salaryData.baseSalary || salaryData.basePay || 0) + totalAllowances,
+        netSalary: (salaryData.grossSalary || salaryData.baseSalary || salaryData.basePay || 0) + totalAllowances - totalDeductions
       },
       deductions: {
         ...deductions,
         totalDeductions,
       },
-      netSalary: (salaryData.grossSalary || 0) + totalAllowances - totalDeductions,
       attendance: {
         totalWorkingDays: monthlyAttendance.presentDays + monthlyAttendance.absentDays,
         presentDays: monthlyAttendance.presentDays,
@@ -787,11 +1135,12 @@ router.get('/:id/salary/:month/:year', async (req, res) => {
       generatedOn: new Date()
     };
 
-    sendResponse(res, 200, true, 'Payslip generated successfully', payslip);
+    sendResponse(res, 200, true, 'Salary details retrieved successfully', responseData);
   } catch (error) {
-    handleError(res, error, 'Failed to generate payslip');
+    handleError(res, error, 'Failed to retrieve salary details');
   }
 });
+
 
 // Get salary summary for all employees
 router.get('/salary/summary/:month/:year', async (req, res) => {
@@ -901,312 +1250,7 @@ router.get('/salary/summary/:month/:year', async (req, res) => {
 // ==================== REPORTS AND ANALYTICS ====================
 
 // Attendance statistics
-router.get('/stats/attendance', async (req, res) => {
-  try {
-    const { month, year, department, role } = req.query;
-    
-    const currentMonth = month || (new Date().getMonth() + 1);
-    const currentYear = year || new Date().getFullYear();
 
-    let query = { isActive: true };
-    if (department) query.department = department;
-    if (role) query.role = role;
-
-    const employees = await Employee.find(query);
-    
-    const analytics = {
-      period: `${currentMonth}/${currentYear}`,
-      totalEmployees: employees.length,
-      overallStats: {
-        totalPresent: 0,
-        totalHours: 0,
-        totalOvertimeHours: 0,
-        averageAttendance: 0,
-        punctualityScore: 0
-      },
-      departmentStats: {},
-      roleStats: {},
-      performanceMetrics: {
-        topPerformers: [],
-        concernedEmployees: []
-      }
-    };
-
-    let totalPresentDays = 0;
-    let totalPossibleDays = 0;
-    let totalLateCount = 0;
-    let totalEarlyLeaveCount = 0;
-
-    const employeeMetrics = [];
-
-    employees.forEach(emp => {
-      const monthlyData = emp.getMonthlyAttendance(currentMonth, currentYear);
-      
-      totalPresentDays += monthlyData.presentDays;
-      totalPossibleDays += (monthlyData.presentDays + monthlyData.absentDays);
-      totalLateCount += monthlyData.lateCount || 0;
-      totalEarlyLeaveCount += monthlyData.earlyLeaveCount || 0;
-      
-      analytics.overallStats.totalHours += monthlyData.totalHours;
-      analytics.overallStats.totalOvertimeHours += monthlyData.overtimeHours || 0;
-
-      // Department stats
-      if (!analytics.departmentStats[emp.department]) {
-        analytics.departmentStats[emp.department] = {
-          employees: 0,
-          totalPresent: 0,
-          totalHours: 0,
-          averageAttendance: 0
-        };
-      }
-      
-      const deptStats = analytics.departmentStats[emp.department];
-      deptStats.employees++;
-      deptStats.totalPresent += monthlyData.presentDays;
-      deptStats.totalHours += monthlyData.totalHours;
-
-      // Role stats
-      if (!analytics.roleStats[emp.role]) {
-        analytics.roleStats[emp.role] = {
-          employees: 0,
-          totalPresent: 0,
-          averageAttendance: 0
-        };
-      }
-      
-      const roleStats = analytics.roleStats[emp.role];
-      roleStats.employees++;
-      roleStats.totalPresent += monthlyData.presentDays;
-
-      // Employee metrics for performance analysis
-      employeeMetrics.push({
-        id: emp._id,
-        name: emp.name,
-        employeeId: emp.employeeId,
-        department: emp.department,
-        role: emp.role,
-        attendancePercentage: monthlyData.attendancePercentage,
-        punctualityScore: monthlyData.punctualityScore,
-        totalHours: monthlyData.totalHours,
-        overtimeHours: monthlyData.overtimeHours || 0
-      });
-    });
-
-    // Calculate overall averages
-    analytics.overallStats.averageAttendance = totalPossibleDays > 0 ? 
-      Math.round((totalPresentDays / totalPossibleDays) * 100) : 0;
-    
-    analytics.overallStats.punctualityScore = totalPresentDays > 0 ?
-      Math.round(((totalPresentDays - totalLateCount - totalEarlyLeaveCount) / totalPresentDays) * 100) : 0;
-
-    // Calculate department averages
-    Object.keys(analytics.departmentStats).forEach(dept => {
-      const stats = analytics.departmentStats[dept];
-      const daysInMonth = new Date(currentYear, currentMonth, 0).getDate();
-      stats.averageAttendance = Math.round((stats.totalPresent / (stats.employees * daysInMonth)) * 100);
-    });
-
-    // Performance metrics
-    const sortedByAttendance = [...employeeMetrics].sort((a, b) => b.attendancePercentage - a.attendancePercentage);
-
-    analytics.performanceMetrics.topPerformers = sortedByAttendance.slice(0, 5).map(emp => ({
-      ...emp,
-      performanceScore: Math.round((emp.attendancePercentage * 0.7 + emp.punctualityScore * 0.3) * 100) / 100
-    }));
-
-    analytics.performanceMetrics.concernedEmployees = sortedByAttendance
-      .filter(emp => emp.attendancePercentage < 80 || emp.punctualityScore < 70)
-      .slice(0, 10);
-
-    sendResponse(res, 200, true, 'Attendance statistics retrieved successfully', analytics);
-  } catch (error) {
-    handleError(res, error, 'Failed to retrieve attendance statistics');
-  }
-});
-
-// Comprehensive report
-router.get('/reports/comprehensive', async (req, res) => {
-  try {
-    const { startDate, endDate, department, role, reportType = 'summary' } = req.query;
-    
-    if (!startDate || !endDate) {
-      return sendResponse(res, 400, false, 'Start date and end date are required');
-    }
-    
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-    
-    if (start >= end) {
-      return sendResponse(res, 400, false, 'End date must be after start date');
-    }
-    
-    let query = { isActive: true };
-    if (department) query.department = department;
-    if (role) query.role = role;
-    
-    const employees = await Employee.find(query);
-    
-    const report = {
-      period: `${startDate} to ${endDate}`,
-      generatedAt: new Date().toISOString(),
-      filters: { department, role },
-      summary: {
-        totalEmployees: employees.length,
-        totalWorkingDays: Math.ceil((end - start) / (1000 * 60 * 60 * 24)),
-        totalPresent: 0,
-        totalAbsent: 0,
-        totalHours: 0,
-        totalOvertimeHours: 0,
-        totalSalaryPaid: 0
-      },
-      departmentBreakdown: {},
-      roleBreakdown: {},
-      topPerformers: [],
-      attendanceIssues: [],
-      salaryBreakdown: {
-        totalBaseSalary: 0,
-        totalOvertimePay: 0,
-        totalDeductions: 0,
-        totalNetPay: 0
-      }
-    };
-    
-    const employeeDetails = [];
-    
-    employees.forEach(emp => {
-      // Filter attendance within date range
-      const attendanceInRange = emp.attendance.filter(att => 
-        att.date >= start && att.date <= end
-      );
-      
-      const presentDays = attendanceInRange.filter(att => att.isPresent).length;
-      const absentDays = attendanceInRange.filter(att => !att.isPresent).length;
-      const totalHours = attendanceInRange.reduce((sum, att) => sum + (att.hoursWorked || 0), 0);
-      const overtimeHours = attendanceInRange.reduce((sum, att) => sum + (att.overtimeHours || 0), 0);
-      const lateCount = attendanceInRange.filter(att => att.status === 'late').length;
-      const earlyLeaveCount = attendanceInRange.filter(att => att.status === 'early-leave').length;
-      
-      // Calculate attendance percentage
-      const workingDays = presentDays + absentDays;
-      const attendancePercentage = workingDays > 0 ? Math.round((presentDays / workingDays) * 100) : 0;
-      const punctualityScore = presentDays > 0 ? Math.round(((presentDays - lateCount - earlyLeaveCount) / presentDays) * 100) : 0;
-      
-      // Simplified salary calculation for report period
-      const dailyBaseSalary = emp.salary.base / 30;
-      const basePay = dailyBaseSalary * presentDays;
-      const overtimePay = (emp.salary.overtime || emp.hourlyRate * 1.5 || 0) * overtimeHours;
-      const grossPay = basePay + overtimePay + (emp.salary.bonus || 0);
-      const netPay = grossPay - (emp.salary.deductions || 0);
-      
-      // Update summary
-      report.summary.totalPresent += presentDays;
-      report.summary.totalAbsent += absentDays;
-      report.summary.totalHours += totalHours;
-      report.summary.totalOvertimeHours += overtimeHours;
-      report.summary.totalSalaryPaid += netPay;
-      
-      // Update salary breakdown
-      report.salaryBreakdown.totalBaseSalary += basePay;
-      report.salaryBreakdown.totalOvertimePay += overtimePay;
-      report.salaryBreakdown.totalDeductions += (emp.salary.deductions || 0);
-      report.salaryBreakdown.totalNetPay += netPay;
-      
-      // Department breakdown
-      if (!report.departmentBreakdown[emp.department]) {
-        report.departmentBreakdown[emp.department] = {
-          employees: 0,
-          totalPresent: 0,
-          totalHours: 0,
-          averageAttendance: 0,
-          totalSalary: 0
-        };
-      }
-      const deptStats = report.departmentBreakdown[emp.department];
-      deptStats.employees++;
-      deptStats.totalPresent += presentDays;
-      deptStats.totalHours += totalHours;
-      deptStats.totalSalary += netPay;
-      
-      // Employee details for further analysis
-      employeeDetails.push({
-        id: emp._id,
-        name: emp.name,
-        employeeId: emp.employeeId,
-        department: emp.department,
-        role: emp.role,
-        attendancePercentage,
-        punctualityScore,
-        presentDays,
-        absentDays,
-        totalHours,
-        overtimeHours,
-        lateCount,
-        earlyLeaveCount,
-        netPay,
-        performanceScore: Math.round((attendancePercentage * 0.4 + punctualityScore * 0.3 + Math.min(totalHours/160, 1) * 100 * 0.3) * 100) / 100
-      });
-    });
-    
-    // Calculate department averages
-    Object.keys(report.departmentBreakdown).forEach(dept => {
-      const stats = report.departmentBreakdown[dept];
-      const deptEmployees = employeeDetails.filter(emp => emp.department === dept);
-      stats.averageAttendance = Math.round(deptEmployees.reduce((sum, emp) => sum + emp.attendancePercentage, 0) / deptEmployees.length);
-    });
-    
-    // Top performers (top 10 by performance score)
-    report.topPerformers = employeeDetails
-      .sort((a, b) => b.performanceScore - a.performanceScore)
-      .slice(0, 10)
-      .map(emp => ({
-        name: emp.name,
-        employeeId: emp.employeeId,
-        department: emp.department,
-        role: emp.role,
-        performanceScore: emp.performanceScore,
-        attendancePercentage: emp.attendancePercentage,
-        punctualityScore: emp.punctualityScore
-      }));
-    
-    // Attendance issues
-    report.attendanceIssues = employeeDetails
-      .filter(emp => emp.attendancePercentage < 80 || emp.lateCount > 5)
-      .map(emp => ({
-        name: emp.name,
-        employeeId: emp.employeeId,
-        department: emp.department,
-        role: emp.role,
-        attendancePercentage: emp.attendancePercentage,
-        lateCount: emp.lateCount,
-        earlyLeaveCount: emp.earlyLeaveCount,
-        issues: [
-          ...(emp.attendancePercentage < 80 ? [`Low attendance: ${emp.attendancePercentage}%`] : []),
-          ...(emp.lateCount > 5 ? [`Frequent late arrivals: ${emp.lateCount} times`] : []),
-          ...(emp.earlyLeaveCount > 3 ? [`Early leaves: ${emp.earlyLeaveCount} times`] : [])
-        ]
-      }));
-    
-    // Round summary numbers
-    Object.keys(report.summary).forEach(key => {
-      if (typeof report.summary[key] === 'number') {
-        report.summary[key] = Math.round(report.summary[key]);
-      }
-    });
-    
-    Object.keys(report.salaryBreakdown).forEach(key => {
-      report.salaryBreakdown[key] = Math.round(report.salaryBreakdown[key]);
-    });
-    
-    // Include detailed employee data if requested
-    if (reportType === 'detailed') {
-      report.employeeDetails = employeeDetails;
-    }
-    
-    sendResponse(res, 200, true, 'Comprehensive report generated successfully', report);
-  } catch (error) {
-    handleError(res, error, 'Failed to generate comprehensive report');
-  }
-});
 
 // Bulk check-in
 router.post('/bulk/checkin', async (req, res) => {
@@ -1397,5 +1441,74 @@ router.get('/health', (req, res) => {
     status: 'operational'
   });
 });
+
+
+
+
+router.get('/:id/payslip/:month/:year', async (req, res) => {
+  try {
+    const { month, year } = req.params;
+    
+    const employee = await Employee.findById(req.params.id);
+    
+    if (!employee) {
+      return sendResponse(res, 404, false, 'Employee not found');
+    }
+
+    const monthlyAttendance = employee.getMonthlyAttendance(month, year);
+    const salaryData = employee.calculateSalary(month, year);
+
+    // Calculate allowances and deductions
+    const allowances = {
+      transport: 1000,
+      meal: 500,
+      mobile: 300,
+      performance: monthlyAttendance.attendancePercentage >= 95 ? 2000 : 0
+    };
+
+    const deductionsList = [
+      { name: 'Provident Fund (12%)', amount: Math.round((salaryData.baseSalary || salaryData.basePay || 0) * 0.12) },
+      { name: 'ESI (1.75%)', amount: Math.round((salaryData.baseSalary || salaryData.basePay || 0) * 0.0175) },
+      { name: 'Advance/Other', amount: employee.salary.deductions || 0 }
+    ].filter(d => d.amount > 0);
+
+    const totalAllowances = Object.values(allowances).reduce((sum, val) => sum + val, 0);
+    const totalDeductions = deductionsList.reduce((sum, d) => sum + d.amount, 0);
+
+    const payslip = {
+      employee: {
+        name: employee.name,
+        employeeId: employee.employeeId,
+        role: employee.role,
+        department: employee.department,
+        joinDate: employee.joinDate,
+        bankDetails: employee.bankDetails
+      },
+      period: {
+        month: parseInt(month),
+        year: parseInt(year),
+        monthName: new Date(year, month - 1).toLocaleString('default', { month: 'long' }),
+        workingDays: monthlyAttendance.presentDays + monthlyAttendance.absentDays,
+        presentDays: monthlyAttendance.presentDays
+      },
+      earnings: {
+        basicSalary: salaryData.baseSalary || salaryData.basePay || 0,
+        overtimePay: salaryData.overtimePay || 0,
+        allowances,
+        totalEarnings: (salaryData.baseSalary || salaryData.basePay || 0) + (salaryData.overtimePay || 0) + totalAllowances
+      },
+      deductions: deductionsList,
+      totalDeductions,
+      netPay: (salaryData.baseSalary || salaryData.basePay || 0) + (salaryData.overtimePay || 0) + totalAllowances - totalDeductions,
+      generatedOn: new Date()
+    };
+
+    sendResponse(res, 200, true, 'Payslip generated successfully', payslip);
+  } catch (error) {
+    handleError(res, error, 'Failed to generate payslip');
+  }
+});
+
+
 
 module.exports = router;

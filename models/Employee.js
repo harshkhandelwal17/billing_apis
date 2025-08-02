@@ -589,12 +589,12 @@ employeeSchema.methods.getWeekendDays = function(month, year) {
 // Enhanced salary calculation with overtime and deductions
 employeeSchema.methods.calculateSalary = function(month, year) {
   const monthlyData = this.getMonthlyAttendance(month, year);
-  const baseSalary = this.salary.base;
+  const baseSalary = this.salary.base || 0;
   
   if (this.payrollType === 'monthly') {
     const attendanceMultiplier = monthlyData.attendancePercentage / 100;
     const basePay = baseSalary * attendanceMultiplier;
-    const overtimePay = (this.salary.overtime || 0) * monthlyData.overtimeHours;
+    const overtimePay = (this.salary.overtime || 0) * (monthlyData.overtimeHours || 0);
     const bonus = this.salary.bonus || 0;
     const deductions = this.salary.deductions || 0;
     
@@ -607,7 +607,7 @@ employeeSchema.methods.calculateSalary = function(month, year) {
       totalWorkingDays: monthlyData.presentDays + monthlyData.absentDays,
       attendancePercentage: monthlyData.attendancePercentage,
       basePay: Math.round(basePay),
-      overtimeHours: monthlyData.overtimeHours,
+      overtimeHours: monthlyData.overtimeHours || 0,
       overtimePay: Math.round(overtimePay),
       bonus,
       deductions,
@@ -616,24 +616,42 @@ employeeSchema.methods.calculateSalary = function(month, year) {
     };
   } else if (this.payrollType === 'hourly') {
     const hourlyRate = this.hourlyRate || 0;
-    const regularPay = monthlyData.totalHours * hourlyRate;
-    const overtimePay = monthlyData.overtimeHours * hourlyRate * 1.5; // 1.5x for overtime
+    const regularPay = (monthlyData.totalHours || 0) * hourlyRate;
+    const overtimePay = (monthlyData.overtimeHours || 0) * hourlyRate * 1.5; // 1.5x for overtime
     const grossSalary = regularPay + overtimePay + (this.salary.bonus || 0);
     const netSalary = grossSalary - (this.salary.deductions || 0);
     
     return {
       hourlyRate,
-      totalHours: monthlyData.totalHours,
-      overtimeHours: monthlyData.overtimeHours,
+      totalHours: monthlyData.totalHours || 0,
+      overtimeHours: monthlyData.overtimeHours || 0,
       regularPay: Math.round(regularPay),
       overtimePay: Math.round(overtimePay),
       bonus: this.salary.bonus || 0,
       deductions: this.salary.deductions || 0,
       grossSalary: Math.round(grossSalary),
-      netSalary: Math.round(netSalary)
+      netSalary: Math.round(netSalary),
+      basePay: Math.round(regularPay), // For consistency with monthly
+      baseSalary: Math.round(regularPay) // For consistency with monthly
     };
   }
+  
+  // Fallback for other payroll types
+  return {
+    baseSalary: baseSalary,
+    basePay: baseSalary,
+    presentDays: monthlyData.presentDays,
+    totalWorkingDays: monthlyData.presentDays + monthlyData.absentDays,
+    attendancePercentage: monthlyData.attendancePercentage,
+    overtimeHours: monthlyData.overtimeHours || 0,
+    overtimePay: 0,
+    bonus: this.salary.bonus || 0,
+    deductions: this.salary.deductions || 0,
+    grossSalary: baseSalary,
+    netSalary: baseSalary - (this.salary.deductions || 0)
+  };
 };
+
 
 // Method to get today's attendance
 employeeSchema.methods.getTodayAttendance = function() {

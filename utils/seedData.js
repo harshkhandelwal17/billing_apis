@@ -47,7 +47,7 @@ async function seedDatabase() {
     const empCount = await Employee.countDocuments();
     if (empCount === 0) {
       const sampleEmployees = [
-        { name: 'Rahul Kumar', email: 'rahul@restaurant.com', phone: '9876543210', role: 'waiter', salary: 18000 },
+        { name: 'Rahul Kumar', email: 'rahul@restaurant.com', phone: '9691954035', role: 'waiter', salary: 18000 },
         { name: 'Priya Sharma', email: 'priya@restaurant.com', phone: '9876543211', role: 'cook', salary: 25000 },
         { name: 'Amit Singh', email: 'amit@restaurant.com', phone: '9876543212', role: 'cashier', salary: 20000 },
         { name: 'Sunita Devi', email: 'sunita@restaurant.com', phone: '9876543213', role: 'cleaner', salary: 12000 }
